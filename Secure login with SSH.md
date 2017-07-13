@@ -12,7 +12,7 @@ To log into your server use the `ssh` command replacing `123.45.56.78` with your
 ```bash
 ssh root@123.45.56.78
 
-The authenticity of host '123.45.56.78 (123.45.56.78)' can't be established.
+The authenticity of host '123.45.56.78 (123.45.56.78)' can′t be established.
 ECDSA key fingerprint is SHA256:mX1fCAc5cyf2bG7BZnBPhrrmIKANdBtWzk676MgqhSs.
 Are you sure you want to continue connecting (yes/no)? yes
 Warning: Permanently added '123.45.56.78' (ECDSA) to the list of known hosts.
@@ -41,7 +41,7 @@ Retype new UNIX password:
 We still want to be able to log in and work on the server, so we need to create a new user with `sudo` privileges.
 
 ```bash
-adduser lukas --ingroup sudo --gecos ""
+$ adduser lukas --ingroup sudo --gecos ""
 ```
 
 My user is named `lukas`, the `--ingroup` flag allows us to assign the user to one group (if you leave it out a group with the users name will be created). The `--gecos` flag allows us to assign details like a phone number. Since this is not interesting, we just provide an empty string `""` to avoid answering all the questions.
