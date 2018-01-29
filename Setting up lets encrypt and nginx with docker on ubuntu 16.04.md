@@ -8,7 +8,9 @@ For this article I am creating a [digital ocean](https://m.do.co/c/30eae8aadf01)
 
 While I add my ssh key via the GUI, you can easily [add your ssh keys manually](/secure-server-login-via-ssh).
 
-Once the server and docker including **docker-compose** is set up wen can start.
+Once the server and docker including **docker-compose** is set up we can start.
+
+The files we create will need to be placed within a directory on your server, e.g. your users home directory.
 
 ## Understanding certbot
 
@@ -191,26 +193,232 @@ For requests to this directory the root is `/var/www/html`, which we mounted int
 
 The last part redirects all requests on port `80` that are to anything outside the `/.well-known/acme-challenge` directory to `https`.
 
-
+Now that this file exists you can run `docker-compose -d` and it should run without an error. 
 
 ## Certbot
 
+Now that we have our nginx server ready it is time to create our certificates. Before you can do this you will need to point a domain to your server, I created `staging.vea.re`. Make sure to substitute it for your domain.
+
 ### Creating certificates
+
+Using docker we can `run` a container with the `--rm` flag, which means it will be removed once it has served its purpose. This is ideal for our `certbot/certbot` container.
+
+```bash
+docker run -it --rm \
+	--name letsencrypt \
+  -v "/var/lib/letsencrypt:/var/lib/letsencrypt" \
+  --volumes-from nginx \
+  certbot/certbot certonly \
+  --webroot \
+  --webroot-path /var/www/html \
+  --agree-tos \
+  --staging \
+  --dry-run \
+  -m your@email.com \
+  -d staging.vea.re
+  
+```
+
+I will go through all flags one-by-one, make sure to remove the `--dry-run` flag once you want to actually create a certificate and the `--staging` flag if you want a real one.
+
+- `-it` makes the container interactive which we want because we may need to interact with questions from `verbot`
+
+- `--rm` removes the container once it exits
+
+CAN WE DELETE THEM?=??
+- `--name` gives the container a name
+- `-v` mounts volumes, we
+
+- `--volumes-from` mounts all volumes that are mounted to a specific container `nginx` in our case. We want this because certbot must place our certificates here.
+
+Now we run `certbot/certbot certonly`, `certbot/certbot` specifies the container on hub.docker.com. Since we don't want certbot to create a server but use our nginx server instead we tell it to only create the certificates using the `certonly` command. The following flags are for certbot now.
+
+- `--webroot` tells certbot to run in the webfoot certification mode
+
+- `--webroot-path` tells it which path to use as the web root, `/var/www/html` for us
+
+- `--agree-tos` automatically agrees to the terms of services, instead of asking us, this is important for automating it
+
+- `--staging` creates a staging certificate. Be careful with non-staging certificates during testing, as there is a limited number of requests you are allowed to make. *(Remove the flag to create a production certificate)*
+
+- `--dry-run` will test everything but not actually create a certificate. Make sure this runs without an error before creating a certificate. *(Remove the flag to create a certificate)*
+
+- `-m` is used to tell certbot which email address to use for registration
+
+- `-d` lets you specify which domain you want to create a certificate for
 
 ### Renewing certificates
 
+At some point you will need to renew your certificates. They are only valid for 90 days after all.
+
+For this we can use certbot as well and run the `renew` command with it.
+
+```bash
+docker run -it --rm \
+  --volumes-from nginx \
+  certbot/certbot renew
+```
+
 ### Testing your certificate
+
+To make sure your certificate is working you can add the following at the end of your `/nginx/conf.d/default.conf`. 
+
+```
 server {
-server_name staging.lukasoppermann.de;
-    ssl_certificate /etc/letsencrypt/live/staging.lukasoppermann.de/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/staging.lukasoppermann.de/privkey.pem;
-listen 443 ssl http2;
-listen [::]:443 ssl http2;
-location / {
-        root         /var/www/html;
+	listen 443 ssl http2;
+	listen [::]:443 ssl http2;
+	server_name staging.vea.re; # replace with your domain
+	
+	# replace your domain in both paths
+	ssl_certificate /etc/letsencrypt/live/staging.vea.re/fullchain.pem;
+	ssl_certificate_key /etc/letsencrypt/live/staging.vea.re/privkey.pem;
+
+	location / {
+		root         /var/www/html;
+	}
 }
-}
+```
+
+You will need to make nginx reload the config file before this change will take effect. The easiest way to do this, is to run the following command.
+
+```bash
+# it should tell you that your file is fine
+docker exec -it nginx nginx -t
+
+# this will reload your file
+docker exec -it nginx nginx -s reload
+```
+
+Now if you place `index.html` with `<h1>Hello world!</h1>` into the `/var/www/html` directory, you should be able to reach it via the browser at `https://your-domain.com/index.html`.
+
+### Additional security measures
+
+You need to make sure that your server, proxy and certificates are secure. The first thing to do is to create strong Diffie–Hellman parameters.
+
+#### Diffie–Hellman Parameters
+The Diffie–Hellman key exchange is a method of exchanging cryptographic keys securely. The Diffie–Hellman parameters are basically used to secure this exchange, so you want strong ones.
+
+Creating them is simple, on your server run the following command:
+
+```bash
+# first move into your letsencrypt directory
+cd ~/letsencrypt
+
+# now create your parameters
+sudo openssl dhparam -out dhparam.pem 2048
+```
+
+Now you just need to make sure it is actually used. 
+This can be done by placing one line into your `/nginx/conf.d/default.conf` file within the `server` block:
+
+```
+ssl_dhparam /etc/letsencrypt/dhparam.pem;
+```
+
+Since we mapped then `~/letsencrypt` to the nginx docker container into `/etc/letsencrypt`, you should have the file available. Make sure to test (`nginx -t`) & reload (`nginx -s reload`) your nginx server, like we did before.
+
+#### Other security settings
+There are some other security settings & ssl parameters you will want to add. To make it easier to include them into every server block I extracted them into a new file named `ssl-params.conf` in the new directory `/nginx/includes`. I also moved the `ssl_dhparam` line here.
+
+```bash
+# from https://cipherli.st/
+# and https://raymii.org/s/tutorials/Strong_SSL_Security_On_nginx.html
+
+ssl_protocols TLSv1 TLSv1.1 TLSv1.2;
+ssl_prefer_server_ciphers on;
+ssl_ciphers "EECDH+AESGCM:EDH+AESGCM:ECDHE-RSA-AES128-GCM-SHA256:AES256+EECDH:DHE-RSA-AES128-GCM-SHA256:AES256+EDH:ECDHE-RSA-AES256-GCM-SHA384:DHE-RSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-SHA384:ECDHE-RSA-AES128-SHA256:ECDHE-RSA-AES256-SHA:ECDHE-RSA-AES128-SHA:DHE-RSA-AES256-SHA256:DHE-RSA-AES128-SHA256:DHE-RSA-AES256-SHA:DHE-RSA-AES128-SHA:ECDHE-RSA-DES-CBC3-SHA:EDH-RSA-DES-CBC3-SHA:AES256-GCM-SHA384:AES128-GCM-SHA256:AES256-SHA256:AES128-SHA256:AES256-SHA:AES128-SHA:DES-CBC3-SHA:HIGH:!aNULL:!eNULL:!EXPORT:!DES:!MD5:!PSK:!RC4";
+ssl_ecdh_curve secp384r1;
+ssl_session_cache shared:SSL:10m;
+ssl_stapling off;
+
+add_header X-Frame-Options DENY;
+add_header X-Content-Type-Options nosniff;
+add_header X-XSS-Protection "1; mode=block";
+
+# load the diffie–hellman parameter
+ssl_dhparam /etc/letsencrypt/dhparam.pem;
+```
+
+*A fair warning, I am by no means an expert on nginx security, so you might want to read up in it somewhere else as well.*
+
+Now this file needs to be included within your server block instead of the `ssl_dhparam` line:
+
+```bash
+include /etc/nginx/includes/ssl-params.conf;
+```
 
 ### Automating certificate renewal
+Wouldn't it be ideal if you would not have to worry about your certificates at all? Well, this can be achieved by making certbot renew your certificates automatically, via a simple `cron job`.
 
-### Convenicene scripts 
+For this I suggest creating a new directory `letsencrypt_scripts` in which we can create a file named `cron_letsencrypt`:
+
+```bash
+#!/bin/sh
+
+# the directory to store log files
+log_dir=../logs/nginx/letsencrypt/
+
+# run the renew script an store the result in $output
+output=$(docker run -it --rm \
+  --volumes-from nginx \
+  certbot/certbot renew \
+  --text 2>&1)
+  
+# Get Date
+date=`date +%Y-%m-%d_%H%M%S`
+
+# create log folder if it does not exist
+mkdir -p $log_dir
+
+# Write output to log file
+cat > ${log_dir}${date}_letsencrypt.txt << EOF
+Date: $date
+$output
+EOF
+
+# send email if mail command is available
+# replace server@domain.com & your@email.com
+if type "mail" &> /dev/null; then
+  echo "$output" | mail -s "Daily SSL Revalidation update from ${date}" -A ${log_dir}${date}_letsencrypt.txt -r 
+  server@domain.com your@email.com
+fi
+
+# remove log files older than 40 days
+find $log_dir -type f -mtime +40 -delete
+```
+
+The script runs the command, logs the output to a file within `/logs/nginx/letsencrypt/` and sends an email to you with the log as long as `mailutils` is installed.
+
+If you want to install it, you can run the following lines ion ubuntu:
+
+```bash
+apt-get update
+apt-get install mailutils
+```
+
+Now all that is left to do is to add a line to the `crontab`. 
+
+```bash
+crontab -e
+```
+
+Now you can add a line at the very bottom, like:
+
+```bash
+30 18 * * *  /home/letsencrypt_scripts/cron_letsencrypt
+```
+
+The cron time format is shown below. You can just [google crontab time format](https://www.google.com/search?q=crontab+time+format) to get a better idea of how it works.
+
+```bash
+* * * * * *
+| | | | | | 
+| | | | | +-- Year              (range: 1900-3000)
+| | | | +---- Day of the Week   (range: 1-7, 1 standing for Monday)
+| | | +------ Month of the Year (range: 1-12)
+| | +-------- Day of the Month  (range: 1-31)
+| +---------- Hour              (range: 0-23)
++------------ Minute            (range: 0-59)
+```
+
+Once you are done save your file and you should be all set. You probably should run the task every day so that you have  ample time to deal with any renewal issue if they arrive. 
